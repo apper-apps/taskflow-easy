@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'react-toastify'
+import { useSelector } from 'react-redux'
 import { format, isToday, isTomorrow, isPast } from 'date-fns'
 import ApperIcon from './ApperIcon'
+import { taskService } from '../services/taskService'
 
 const MainFeature = () => {
   const [tasks, setTasks] = useState([])
+  const [loading, setLoading] = useState(false)
   const [isAddingTask, setIsAddingTask] = useState(false)
   const [editingTask, setEditingTask] = useState(null)
   const [filter, setFilter] = useState('all')
@@ -17,6 +20,9 @@ const MainFeature = () => {
     dueDate: '',
     category: 'general'
   })
+
+  // Get authentication status
+  const { isAuthenticated } = useSelector((state) => state.user);
 
   const priorities = {
     low: { color: 'bg-green-100 text-green-700 border-green-200', icon: 'ArrowDown' },
@@ -32,107 +38,200 @@ const MainFeature = () => {
     learning: { color: 'bg-orange-100 text-orange-700', icon: 'BookOpen' }
   }
 
-  // Load tasks from localStorage on component mount
+  // Load tasks from database on component mount
   useEffect(() => {
-    const savedTasks = localStorage.getItem('taskflow-tasks')
-    if (savedTasks) {
-      setTasks(JSON.parse(savedTasks))
+    if (isAuthenticated) {
+      loadTasks();
     }
-  }, [])
+  }, [isAuthenticated]);
 
-  // Save tasks to localStorage whenever tasks change
+  // Load tasks with current filter and search
   useEffect(() => {
-    localStorage.setItem('taskflow-tasks', JSON.stringify(tasks))
-  }, [tasks])
+    if (isAuthenticated) {
+      loadTasks();
+    }
+  }, [filter, searchQuery, isAuthenticated]);
 
-  const handleAddTask = () => {
+  const loadTasks = async () => {
+    if (!isAuthenticated) return;
+    
+    try {
+      setLoading(true);
+      const params = {};
+      
+      if (filter !== 'all') {
+        params.filter = filter;
+      }
+      
+      if (searchQuery.trim()) {
+        params.search = searchQuery.trim();
+      }
+      
+      const response = await taskService.fetchTasks(params);
+      setTasks(response.data || []);
+    } catch (error) {
+      console.error('Error loading tasks:', error);
+      toast.error('Failed to load tasks. Please try again.');
+      setTasks([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddTask = async () => {
+    if (!isAuthenticated) {
+      toast.error('Please log in to create tasks');
+      return;
+    }
+
     if (!newTask.title.trim()) {
       toast.error('Task title is required!')
       return
     }
 
-    const task = {
-      id: Date.now().toString(),
-      ...newTask,
-      completed: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+    try {
+      setLoading(true);
+      const taskData = {
+        ...newTask,
+        completed: false
+      };
+
+      const createdTask = await taskService.createTask(taskData);
+      
+      setTasks(prev => [createdTask, ...prev]);
+      setNewTask({
+        title: '',
+        description: '',
+        priority: 'medium',
+        dueDate: '',
+        category: 'general'
+      });
+      setIsAddingTask(false);
+      toast.success('Task created successfully!');
+    } catch (error) {
+      console.error('Error creating task:', error);
+      toast.error(error.message || 'Failed to create task. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditTask = async (taskId, updates) => {
+    if (!isAuthenticated) {
+      toast.error('Please log in to update tasks');
+      return;
     }
 
-    setTasks(prev => [task, ...prev])
-    setNewTask({
-      title: '',
-      description: '',
-      priority: 'medium',
-      dueDate: '',
-      category: 'general'
-    })
-    setIsAddingTask(false)
-    toast.success('Task created successfully!')
-  }
+    try {
+      setLoading(true);
+      const updatedTask = await taskService.updateTask(taskId, updates);
+      
+      setTasks(prev => prev.map(task => 
+        task.Id === taskId ? updatedTask : task
+      ));
+      setEditingTask(null);
+      toast.success('Task updated successfully!');
+    } catch (error) {
+      console.error('Error updating task:', error);
+      toast.error(error.message || 'Failed to update task. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const handleEditTask = (taskId, updates) => {
-    setTasks(prev => prev.map(task => 
-      task.id === taskId 
-        ? { ...task, ...updates, updatedAt: new Date().toISOString() }
-        : task
-    ))
-    setEditingTask(null)
-    toast.success('Task updated successfully!')
-  }
+  const handleDeleteTask = async (taskId) => {
+    if (!isAuthenticated) {
+      toast.error('Please log in to delete tasks');
+      return;
+    }
 
-  const handleDeleteTask = (taskId) => {
-    setTasks(prev => prev.filter(task => task.id !== taskId))
-    toast.success('Task deleted successfully!')
-  }
+    if (!window.confirm('Are you sure you want to delete this task?')) {
+      return;
+    }
 
-  const toggleTaskComplete = (taskId) => {
-    setTasks(prev => prev.map(task => {
-      if (task.id === taskId) {
-        const updated = { ...task, completed: !task.completed, updatedAt: new Date().toISOString() }
-        toast.success(updated.completed ? 'Task completed! 🎉' : 'Task marked as incomplete')
-        return updated
-      }
-      return task
-    }))
+    try {
+      setLoading(true);
+      await taskService.deleteTask(taskId);
+      
+      setTasks(prev => prev.filter(task => task.Id !== taskId));
+      toast.success('Task deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error(error.message || 'Failed to delete task. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleTaskComplete = async (taskId) => {
+    if (!isAuthenticated) {
+      toast.error('Please log in to update tasks');
+      return;
+    }
+
+    const task = tasks.find(t => t.Id === taskId);
+    if (!task) return;
+
+    try {
+      setLoading(true);
+      const updatedTask = await taskService.updateTask(taskId, { 
+        ...task, 
+        completed: !task.completed 
+      });
+      
+      setTasks(prev => prev.map(t => 
+        t.Id === taskId ? updatedTask : t
+      ));
+      
+      toast.success(updatedTask.completed ? 'Task completed! 🎉' : 'Task marked as incomplete');
+    } catch (error) {
+      console.error('Error updating task:', error);
+      toast.error(error.message || 'Failed to update task. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // If not authenticated, show login message
+  if (!isAuthenticated) {
+    return (
+      <div className="w-full max-w-6xl mx-auto">
+        <motion.div 
+          className="text-center py-12 bg-white/50 dark:bg-surface-800/50 backdrop-blur-sm rounded-2xl"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+        >
+          <div className="w-16 h-16 bg-gradient-to-br from-primary-500 to-secondary-500 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <ApperIcon name="Lock" size={32} className="text-white" />
+          </div>
+          <h3 className="text-xl font-semibold text-surface-700 dark:text-surface-300 mb-2">
+            Please Log In
+          </h3>
+          <p className="text-surface-500 dark:text-surface-400">
+            You need to be logged in to access your tasks and create new ones
+          </p>
+        </motion.div>
+      </div>
+    );
   }
 
   const getFilteredTasks = () => {
-    let filtered = tasks
-
-    // Apply status filter
-    if (filter === 'completed') {
-      filtered = filtered.filter(task => task.completed)
-    } else if (filter === 'pending') {
-      filtered = filtered.filter(task => !task.completed)
-    } else if (filter === 'overdue') {
-      filtered = filtered.filter(task => 
-        !task.completed && task.dueDate && isPast(new Date(task.dueDate))
-      )
-    }
-
-    // Apply search query
-    if (searchQuery) {
-      filtered = filtered.filter(task =>
-        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.description.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    }
-
-    return filtered.sort((a, b) => {
-      // Sort by completion status first, then by priority, then by due date
+    // Since filtering is now done on the server side, just return the tasks
+    // and apply client-side sorting for better UX
+    return tasks.sort((a, b) => {
+      // Sort by completion status first, then by priority, then by created date
       if (a.completed !== b.completed) {
-        return a.completed - b.completed
+        return a.completed - b.completed;
       }
       
-      const priorityOrder = { high: 3, medium: 2, low: 1 }
+      const priorityOrder = { high: 3, medium: 2, low: 1 };
       if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
-        return priorityOrder[b.priority] - priorityOrder[a.priority]
+        return priorityOrder[b.priority] - priorityOrder[a.priority];
       }
 
-      return new Date(b.createdAt) - new Date(a.createdAt)
-    })
-  }
+      return new Date(b.createdAt || b.CreatedOn) - new Date(a.createdAt || a.CreatedOn);
+    });
+  };
 
   const getDateDisplay = (dateString) => {
     if (!dateString) return null
@@ -168,6 +267,12 @@ const MainFeature = () => {
           Create, organize, and track your tasks with intelligent prioritization and seamless workflow management
         </p>
       </motion.div>
+
+      {loading && (
+        <div className="text-center py-4">
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+        </div>
+      )}
 
       {/* Quick Stats */}
       <motion.div 
@@ -234,7 +339,8 @@ const MainFeature = () => {
             onClick={() => setIsAddingTask(true)}
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            className="flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300 group min-w-[140px]"
+            className="flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300 group min-w-[140px] disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={loading}
           >
             <ApperIcon name="Plus" size={20} className="group-hover:rotate-90 transition-transform duration-300" />
             Add Task
@@ -272,7 +378,7 @@ const MainFeature = () => {
           ) : (
             filteredTasks.map((task, index) => (
               <motion.div
-                key={task.id}
+                key={task.Id}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
@@ -284,7 +390,7 @@ const MainFeature = () => {
                 <div className="flex flex-col sm:flex-row sm:items-start gap-4">
                   {/* Checkbox */}
                   <motion.button
-                    onClick={() => toggleTaskComplete(task.id)}
+                    onClick={() => toggleTaskComplete(task.Id)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     className={`flex-shrink-0 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-200 ${
@@ -349,16 +455,18 @@ const MainFeature = () => {
                           onClick={() => setEditingTask(task)}
                           whileHover={{ scale: 1.1 }}
                           whileTap={{ scale: 0.9 }}
-                          className="p-2 text-surface-500 hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-all duration-200"
+                          className="p-2 text-surface-500 hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={loading}
                         >
                           <ApperIcon name="Edit2" size={16} />
                         </motion.button>
                         
                         <motion.button
-                          onClick={() => handleDeleteTask(task.id)}
+                          onClick={() => handleDeleteTask(task.Id)}
                           whileHover={{ scale: 1.1 }}
                           whileTap={{ scale: 0.9 }}
-                          className="p-2 text-surface-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200"
+                          className="p-2 text-surface-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={loading}
                         >
                           <ApperIcon name="Trash2" size={16} />
                         </motion.button>
@@ -480,9 +588,10 @@ const MainFeature = () => {
                   onClick={handleAddTask}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="flex-1 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300"
+                  className="flex-1 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
                 >
-                  Create Task
+                  {loading ? 'Creating...' : 'Create Task'}
                 </motion.button>
                 <motion.button
                   onClick={() => setIsAddingTask(false)}
@@ -601,12 +710,13 @@ const MainFeature = () => {
 
               <div className="flex gap-3 mt-6">
                 <motion.button
-                  onClick={() => handleEditTask(editingTask.id, editingTask)}
+                  onClick={() => handleEditTask(editingTask.Id, editingTask)}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="flex-1 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300"
+                  className="flex-1 py-3 bg-gradient-to-r from-primary-500 to-secondary-500 text-white font-semibold rounded-xl shadow-soft hover:shadow-card transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
                 >
-                  Update Task
+                  {loading ? 'Updating...' : 'Update Task'}
                 </motion.button>
                 <motion.button
                   onClick={() => setEditingTask(null)}

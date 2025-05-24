@@ -6,6 +6,12 @@ plugins: [react()],
 server: {
 allowedHosts: true,
 host: true,
+  },
+  define: {
+    global: 'globalThis'
+  },
+  build: {
+    sourcemap: true
 strictPort: true,
 port: 5173
 }})
